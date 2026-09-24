@@ -341,7 +341,80 @@ look different from each other, so a duplicate check does not catch it.
 
 The fleet also carries a local Qwen2.5-VL captioner for running with no external endpoint.
 It needs the weights in `configs/models.yaml` and is not what produced the released
-captions.
+captions. `scripts/caption_videos.py` runs it over plain video files (§3c).
+
+## 3c. Pose and caption local videos without the fleet
+
+For a directory of downloaded web video — no object store, no acquire, no filter models —
+two standalone scripts run the `default` camera path and the local captioner over one
+output tree:
+
+```bash
+python3 scripts/pose_videos.py <videos or dirs> --out <out> --spec 960f --gpus 0,1,2,3
+python3 scripts/caption_videos.py <out> --out <out> --gpu 0
+```
+
+`pose_videos.py` cuts each video into contiguous spec windows with the fleet's own
+`_split_spec_windows`, so windows and ids match a fleet run (`<id>`, `<id>_w001`, …). It then
+runs `vipe_cli.annotate_pose_vipe_cli` on every window: Pi3X + MoGe-2 fused depth on 64
+sampled frames, then patched VIPE with per-frame intrinsics BA. Each window directory gets
+`video.mp4`, `poses.npy`, `intrinsics.npy` and a `meta.json` carrying `scale_factors`,
+`spec` and `vipe_commit`. It asserts `frame_count == len(poses) == len(intrinsics)` before
+writing anything, and writes `meta.json` last as the resume marker. `caption_videos.py`
+names a `<id>/video.mp4` after its directory and skips `_`-prefixed scratch, so `prompt.txt`
+lands beside the poses. Neither script filters or judges; the checks in §4 still apply.
+
+What decides whether a run works:
+
+- **Spec vs source fps.** A window needs the spec's frame rate in real frames. A 16 fps
+  source under `5s` (24 fps) yields nothing and logs a skip — nothing is upsampled.
+  `--spec none` poses each video whole, for input that is already clip-shaped. The window
+  plan is stored once per video in `<out>/<id>/_windows.json`; a different `--spec` needs a
+  new `--out`.
+- **Two Python environments.** The script and the depth precompute run in the caller's env
+  (torch, decord, MoGe pinned to `925b8ed` with its `utils3d`, NumPy < 2; `vipe_cli` puts
+  `third_party/Pi3` on the path). MoGe `main` is now V3 and needs NumPy ≥ 2. VIPE runs from `.venv-vipe/bin/vipe` with its own torch 2.8 / cu128, because
+  its CUDA extension is ABI-locked to that torch. Do not merge them.
+- **VIPE is pinned to `95a8816`** (v1.2.0, VIPE `main` throughout the released pose run).
+  `setup_vipe.sh` checks it out and copies `solarwm.yaml`, but does **not** patch it: run
+  `vipe_patches/apply_vipe_patches.sh` afterwards, or the `pi3xmoge` depth backend and the
+  per-frame BA are missing. Current `main` (8c9f361+) changes the SLAM kernels and
+  post-dates the corpus. The script warns when the checkout is at another commit.
+- **Initialise CUDA before decord.** With a CUDA-built decord, a reader opened before torch
+  initialises CUDA makes the next `.cuda()` segfault. `precompute_fused_depth.py` touches
+  CUDA first; keep that order in any new entry point.
+- **The first run downloads VIPE's auxiliary models.** About 1.6 GB goes into the torch hub
+  dir (GeoCalib, SAM ViT-B, DeAOT, GroundingDINO, DROID, a DINOv2), and `bert-base-uncased`
+  goes into `$SOLAR_WM_WEIGHTS/hf`. DeAOT and DROID come from Google Drive via `gdown`, so
+  warm these caches on a networked machine before running on offline nodes.
+- **Cost.** On one H200, a 960-frame window takes about 4 min (precompute ~25 s, VIPE the
+  rest), and a 160-frame window about 75 s. Run one worker per GPU; `--gpus` takes physical
+  ids.
+
+**Checking a deployment against released poses: expect agreement, not equality.** The depth
+stage is effectively deterministic: `scale_factors` should match a released clip's to about
+1e-3 relative. That is the check that the weights and the Pi3/MoGe code are right. Pi3 has
+no CUDA RoPE in any revision (its `models.curope` import always falls back), so the "slow
+pytorch version" warning is expected and matches production. VIPE is not deterministic:
+GPU accumulation order changes from run to run, and 960-frame SLAM amplifies it, most of all
+on clips whose track has jumps. Split the check by that property, and never use
+`np.allclose`. Measured on 16 released Sekai-Walking clips (960f), half with a smooth
+released track and half with ≥ 30 steps over 1 m per frame:
+
+- **Smooth clips reproduce.** Sim(3)-aligned centre RMSE was 0.04–0.21 m on 7 of 8 (0.64 m
+  on the eighth), with scale 1.00 ± 0.02.
+- **Jumpy clips reproduce the jumpiness, not the path.** Step statistics and path length
+  land close to the released ones (for example 226 vs 220 steps over 1 m, 766 vs 802 m of
+  path), but the trajectory itself differs by 1–7 m RMSE with Sim(3) scale 0.6–1.1. Reruns of
+  one such clip differ from each other in the same way, so no environment setting will
+  return the released track. Judge these clips statistically.
+
+Jumps are common in the released corpus, not an artefact of one run: 60 % of the 696
+Sekai-Walking clips checked have ≥ 10 steps over 1 m per frame (> 16 m/s for a walker),
+and they include 245 `xhigh` clips. Your own video will get the same, so gate on it
+explicitly if it matters for your use. The depth scale matched the released
+`scale_factors` to ≤ 2.5e-3 on 17 of 18 clips; `4Pga3DqeLCs_0054806_0056606` carries a
+uniform 5 % offset that the MoGe version does not explain.
 
 ## 4. Verify your clips — three lenses
 

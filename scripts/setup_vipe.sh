@@ -15,7 +15,13 @@ EXPECT_TORCH="${SOLAR_WM_EXPECT_TORCH:-2.8}"
 python3 -c "import torch,sys; sys.exit(0 if torch.__version__.startswith('$EXPECT_TORCH') else 1)" 2>/dev/null || {
   echo "PREFLIGHT FAIL: expected host torch $EXPECT_TORCH.x; got '$(python3 -c 'import torch;print(torch.__version__)' 2>/dev/null || echo none)'. Set SOLAR_WM_EXPECT_TORCH to override." >&2; exit 30; }
 
-[ -d "$TP/vipe" ] || git clone --depth 1 https://github.com/nv-tlabs/vipe.git "$TP/vipe" || exit 31
+# Pinned to the VIPE HEAD during the released-corpus pose run (95a8816, v1.2.0). Later
+# main (8c9f361+) post-dates that corpus and changes the SLAM solver kernels.
+VIPE_COMMIT="${SOLAR_WM_VIPE_COMMIT:-95a8816947602ddc26fcb7a80bea4f9313059578}"
+if [ ! -d "$TP/vipe" ]; then
+  git clone https://github.com/nv-tlabs/vipe.git "$TP/vipe" \
+    && git -C "$TP/vipe" checkout --detach "$VIPE_COMMIT" || exit 31
+fi
 
 # Do not install a second PyTorch inside this venv. ``--system-site-packages`` keeps
 # the Python package, CUDA runtime, and JIT-compiled extension on one version.

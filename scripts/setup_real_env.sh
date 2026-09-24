@@ -30,7 +30,10 @@ echo "=== [2/6] clone Pi3 ==="
 [ -f "$TP/Pi3/requirements.txt" ] && $PIP -r "$TP/Pi3/requirements.txt"
 
 echo "=== [3/6] install MoGe ==="
-$PIP "git+https://github.com/microsoft/MoGe.git" || exit 13
+# MoGe main moved to V3 (74fbce0), which changes MoGe-2 inference and requires NumPy >= 2.
+# 925b8ed carries the MoGe-2 code that was current during the released-corpus pose run.
+$PIP "git+https://github.com/microsoft/MoGe.git@925b8ed" \
+  "utils3d @ git+https://github.com/EasternJournalist/utils3d.git@3fab839f0be9931dac7c8488eb0e1600c236e183" || exit 13
 
 echo "=== [4/6] download Pi3 weights ==="
 python3 -c "from huggingface_hub import snapshot_download as s; s('yyfz233/Pi3', local_dir='$WT/pi3')" || exit 14

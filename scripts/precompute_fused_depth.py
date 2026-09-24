@@ -29,6 +29,12 @@ def main():
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
 
+    # decord's CUDA build initialises a driver context. If that happens before
+    # PyTorch, the later Pi3 `.cuda()` call segfaults. Touch CUDA first.
+    import torch
+    if torch.cuda.is_available():
+        torch.zeros(1, device="cuda")
+
     # total frame count (decord), and the sampled subset Pi3 runs on
     import decord
     n_total = len(decord.VideoReader(str(video)))
